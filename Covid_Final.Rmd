@@ -1,0 +1,326 @@
+---
+title: "Covid"
+author: "Jacob Gipson"
+date: '2022-11-18'
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+#loading data + packages
+```{r}
+set.seed(1)
+directory = "/Users/jacobgipson/Documents/SMU/Time Series.nosync"
+covid = read.csv(paste(directory, "/owid-covid-data.csv",  sep =""))
+library(tswge)
+library(nnfor)
+library(tidyverse)
+library(vars)
+library(stats)
+```
+#Prepare Data
+```{r}
+#unique(covid$location)
+covid = covid[covid$location == 'United States',]
+covid = covid %>% dplyr::select(date, new_cases, new_deaths)
+cases = covid %>%
+  dplyr::select(date, new_cases) %>%
+  dplyr::filter(!is.na(new_cases))
+deaths = covid %>%
+  dplyr::select(date, new_deaths) %>%
+  dplyr::filter(!is.na(new_deaths))
+```
+#Cases Plot - Data is from 01.23.2022 - 03.05.2022
+#We see wandering behavior and the the autocorrelations seem like theyre damping. 
+#Initial guess is that its a statinary time series, prob best described by an AR model
+```{r}
+plotts.sample.wge(cases$new_cases)
+cases.d1 = artrans.wge(cases$new_cases, phi.tr = c(rep(0,6),1))
+```
+
+#Deaths Plot - Data is from 02.29.2020 - 03.05.2022
+#We also see alot of wandering here, my guess is that this is also stationary.
+```{r}
+plotts.sample.wge(deaths$new_deaths)
+#plotts.sample.wge(vax$new_vaccinations)
+```
+
+
+
+
+
+#Begin exploring possible models for deaths
+#s = 7 seasonal component
+```{r}
+deaths.d1 = artrans.wge(deaths$new_deaths, phi.tr = c(rep(0,6),1))
+plotts.sample.wge(deaths.d1)
+```
+
+```{r}
+aic5.wge(deaths.d1, p = 0:10, q = 0:10, type = 'aic')
+aic5.wge(deaths.d1, p = 0:10, q = 0:10, type = 'bic')
+```
+#ARMA models favored - (7,5), (1,8), (2,8)
+```{r}
+deaths7.7 = est.arma.wge(deaths.d1, p = 7, q = 7)
+deaths1.8 = est.arma.wge(deaths.d1, p = 1, q = 8)
+deaths2.8 = est.arma.wge(deaths.d1, p = 2, q = 8)
+```
+#Forecast backward and compare ASE for both long and short term forecasts (10 and 90 days respectively)
+```{r}
+deaths = deaths$new_deaths
+deaths7.7sf = fore.arima.wge(deaths, phi = deaths7.7$phi, theta = deaths7.7$theta, s = 7, n.ahead = 10, lastn = T)
+deaths1.8sf = fore.arima.wge(deaths, phi = deaths1.8$phi, theta = deaths1.8$theta, s = 7, n.ahead = 10, lastn = T)
+deaths2.8sf = fore.arima.wge(deaths, phi = deaths2.8$phi, theta = deaths2.8$theta, s = 7, n.ahead = 10, lastn = T)
+deaths7.7lf = fore.arima.wge(deaths, phi = deaths7.7$phi, theta = deaths7.7$theta, s = 7, n.ahead = 90, lastn = T)
+deaths1.8lf = fore.arima.wge(deaths, phi = deaths1.8$phi, theta = deaths1.8$theta, s = 7, n.ahead = 90, lastn = T)
+deaths2.8lf = fore.arima.wge(deaths, phi = deaths2.8$phi, theta = deaths2.8$theta, s = 7, n.ahead = 90, lastn = T)
+
+sASE7.7 = mean((deaths[727:736]-deaths7.7sf$f)^2)
+sASE1.8 = mean((deaths[727:736]-deaths1.8sf$f)^2)
+sASE2.8 = mean((deaths[727:736]-deaths2.8sf$f)^2)
+lASE7.7 = mean((deaths[647:736]-deaths7.7lf$f)^2)
+lASE1.8 = mean((deaths[647:736]-deaths1.8lf$f)^2)
+lASE2.8 = mean((deaths[647:736]-deaths2.8lf$f)^2)
+
+sASE7.7
+sASE1.8
+sASE2.8
+lASE7.7
+lASE1.8
+lASE2.8
+```
+#For short term forcast order from lowest to highest ASE was 2.8, 1.8, 7.1
+#For long term forcast order from lowest to highest ASE was 7.7, 1.8, 2.8 it was reversed
+
+#Now we look at Rolling window ASE for both long and short term time horizons
+```{r include=FALSE}
+sRMSE7.7 = roll.win.rmse.wge(deaths,horizon = 10, s = 7, phi = deaths7.7$phi, theta = deaths7.7$theta)
+sRMSE1.8 = roll.win.rmse.wge(deaths,horizon = 10, s = 7, phi = deaths1.8$phi, theta = deaths1.8$theta)
+sRMSE2.8 = roll.win.rmse.wge(deaths,horizon = 10, s = 7, phi = deaths2.8$phi, theta = deaths2.8$theta)
+lRMSE7.7 = roll.win.rmse.wge(deaths,horizon = 90, s = 7, phi = deaths7.7$phi, theta = deaths7.7$theta)
+lRMSE1.8 = roll.win.rmse.wge(deaths,horizon = 90, s = 7, phi = deaths1.8$phi, theta = deaths1.8$theta)
+lRMSE2.8 = roll.win.rmse.wge(deaths,horizon = 90, s = 7, phi = deaths2.8$phi, theta = deaths2.8$theta)
+```
+
+```{r}
+sRMSE7.7$rwRMSE
+sRMSE1.8$rwRMSE
+sRMSE2.8$rwRMSE
+lRMSE7.7$rwRMSE
+lRMSE1.8$rwRMSE
+lRMSE2.8$rwRMSE
+```
+#Rolling window forecasts favor 2.8 for long term, and favors 7.7 in the short term
+#We go with simpler model ARMA(2,8) with seasonal component. looking at traditional ASE, we gain alot in short term ASE while not losing much relatively in long term ASE. looking at rolling window ASE, We gain alot more rolloing window RMSE than we lose in short term RMSE
+#Because ARIMA(12,0,3) with seasonal component s =7 has best rolling window ASE's and comes in second with traditional ASE calculation, that is the winner. 
+
+
+```{r}
+deaths2.8$phi
+deaths2.8$theta
+deaths2.8$avar
+deaths2.8$xbar
+
+ljung.wge(deaths2.8$res, p = 2, q = 8)
+ljung.wge(deaths2.8$res, p = 2, q = 8, K = 48)
+
+plotts.sample.wge(deaths2.8$res, lag.max = 50, arlimits = T)
+```
+#Forecast Deaths
+```{r}
+fore.arima.wge(deaths, phi = deaths2.8$phi, theta = deaths2.8$theta, s = 7, n.ahead = 10)
+fore.arima.wge(deaths, phi = deaths2.8$phi, theta = deaths2.8$theta, s = 7, n.ahead = 90)
+
+```
+
+#MLP
+
+#Prepare data
+```{r}
+covid = read.csv(paste(directory, "/owid-covid-data.csv", sep =""))
+covid = covid[covid$location == 'United States',]
+covid = covid %>% 
+  dplyr::select(date, new_cases, new_deaths, new_vaccinations) %>%
+  dplyr::filter(!is.na(covid$new_cases))
+covid$new_deaths[is.na(covid$new_deaths)] = 0
+casests = data.frame(new_cases = ts(covid$new_cases))
+deathsts = ts(covid$new_deaths)
+```
+
+```{r}
+deaths.train = ts(deathsts[1:683])
+```
+###Trying a few MLP models and evaluate results
+```{r}
+fit = mlp(deaths.train, xreg = casests)
+fit
+```
+
+```{r}
+f = forecast(fit, h = 90, xreg = casests)
+plot(deathsts[684:693], type = "l")
+lines(seq(1,10),f$mean[1:10],col = 'blue')
+ASE10 = mean((deathsts[684:693]-f$mean[1:10])^2)
+ASE10
+
+plot(deathsts[684:773], type = "l", ylim = c(-500,9000))
+lines(seq(1,90),f$mean,col = 'blue')
+ASE90 = mean((deathsts[684:773]-f$mean)^2)
+ASE90
+```
+
+```{r}
+fit2 = mlp(deaths.train)
+fit2
+```
+
+```{r}
+f = forecast(fit2, h = 90)
+plot(deathsts[684:693], type = "l")
+lines(seq(1,10),f$mean[1:10],col = 'blue')
+ASE10 = mean((deathsts[684:693]-f$mean[1:10])^2)
+ASE10
+
+plot(deathsts[684:773], type = "l", ylim = c(-500,9000))
+lines(seq(1,90),f$mean,col = 'blue')
+ASE90 = mean((deathsts[684:773]-f$mean)^2)
+ASE90
+```
+
+```{r}
+set.seed(1)
+fit3 = mlp(deaths.train, xreg = casests, hd = 4, reps = 20, comb = 'median')
+fit3
+```
+
+```{r}
+f1 = forecast(fit3, h = 90, xreg = casests)
+plot(deathsts[684:693], type = "l", ylim = c(200, 3000), ylab = "Deaths", xlab = "Days Ahead", main = "10-Day Forecast")
+lines(seq(1,10),f1$mean[1:10],type = "l", lty = 2)
+legend(1, 850, legend = c("Actual Deaths", "Forecasted Deaths"), lty = 1:2)
+ASE10 = mean((deathsts[684:693]-f1$mean[1:10])^2)
+ASE10
+
+plot(deathsts[684:773], type = "l", ylim = c(-500,9000))
+lines(seq(1,90),f1$mean,col = 'blue')
+legend(1, 25, legend = c("Actual Deaths", "Forecasted Deaths"))
+ASE90 = mean((deathsts[684:773]-f$mean)^2)
+ASE90
+```
+
+```{r}
+set.seed(1)
+fit4 = mlp(deaths.train, xreg = casests, hd = 4, reps = 20, comb = 'median', lags = 7)
+fit4
+```
+
+```{r}
+f2 = forecast(fit4, h = 90, xreg = casests)
+plot(deathsts[684:693], type = "l", ylim = c(200, 3000), ylab = "Deaths", xlab = "Days Ahead", main = "10-Day Forecast")
+lines(seq(1,10),f2$mean[1:10],col = 'blue')
+ASE10 = mean((deathsts[684:693]-f2$mean[1:10])^2)
+ASE10
+
+plot(deathsts[684:773], type = "l", ylim = c(-500,9000), ylab = "Deaths", xlab = "Days Ahead", main = "90-Day Forecast")
+lines(seq(1,90),f2$mean,type = "l", lty = 2)
+legend(1, 8000, legend = c("Actual Deaths", "Forecasted Deaths"), lty = 1:2)
+ASE90 = mean((deathsts[684:773]-f2$mean)^2)
+ASE90
+```
+# We find that fit3 fits the best for short term forecasts, and the addition of univariate lag 7 in fit 4 improves the long term forecasts as without the lag term the deaths are forecasted to 0.
+
+#VAR
+#Prepare Data
+
+```{r}
+covid = read.csv(paste(directory,"/owid-covid-data.csv",  sep =""))
+#Filter United States Data and focus on new cases, deaths, and vax
+covid = covid[covid$location == 'United States',]
+covid = covid %>% 
+  dplyr::select(date, new_cases, new_deaths) %>%
+  dplyr::filter(!is.na(covid$new_cases))
+covid$new_deaths[is.na(covid$new_deaths)] = 0
+
+cases = covid$new_cases
+deaths = covid$new_deaths
+plot(cases, type = "l")
+plot(deaths, type = "l")
+
+cases.train = cases[1:683]
+deaths.train = deaths[1:683]
+
+train = cbind(cases.train, deaths.train)
+```
+
+#Check lags and fit VAR model with cases and death data. Then make predictions
+```{r}
+ccf(cases.train, deaths.train, lag.max = 50)
+VARselect(train, lag.max = 25, type = 'const', season = 7) #Favors lag of 16
+fit = VAR(train, p = 16, type = 'const', season = 7)
+preds10 = predict(fit, n.ahead = 10)
+preds90 = predict(fit, n.ahead = 90)
+```
+#Check short term (10 days) forecast vs.actual
+```{r}
+plot(seq(1,10,1), deaths[684:693], type = 'l', ylim = c(400,3000))
+points(seq(1,10,1), preds10$fcst$deaths.train[1:10,1], type = "b", pch = 15)
+```
+#Check long term (90 days) forecast vs. actual
+```{r}
+plot(seq(1,90,1), deaths[684:773], type = 'l', ylim = c(200,4200))
+points(seq(1,90,1), preds90$fcst$deaths.train[1:90,1], type = "b", pch = 15)
+```
+Check ASE's
+```{r}
+ASE10 = mean((deaths[684:693]-preds10$fcst$deaths.train[1:10,1])^2)
+ASE10
+
+ASE90 = mean((deaths[684:773]-preds90$fcst$deaths.train[1:90,1])^2)
+ASE90
+```
+#Wanted to look at the actual test data. Shows why the forecast deviates from the test data after 40. There is a spike in cases that is not in the training data. Given the spike in cases we would be able to predict the spike in deaths better
+```{r}
+par(mfrow = c(2,1))
+plot(cases[684:773], type = "l",ylab = "Cases", xlab = "", main = "Actual Data 90 Days Ahead")
+plot(deaths[684:773], type = "l",ylab = "Deaths", xlab = "Days")
+```
+
+#forecasts and prediction limits
+```{r}
+fanchart(preds10)
+
+plot(seq(1,90,1), preds90$fcst$deaths.train[1:90,1], type = 'l', ylim = c(-2000,4200), ylab = "Predicted Deaths", xlab = "Days Ahead", main = "90 day forecast with Prediction limits")
+lines(seq(1,90,1), preds90$fcst$deaths.train[1:90,2], type = 'l', lty = 3)
+lines(seq(1,90,1), preds90$fcst$deaths.train[1:90,3], type = 'l', lty = 3)
+legend(1, -400, legend = c("Mean Prediction", "Prediction Intervals"), lty = c(1,3))
+```
+
+#Ensemble models
+#VAR predicts - preds10 + preds90
+#MLP predicts - f1 + f2
+#ARIMA predicts - deaths2.8sf + deaths2.8lf
+
+##Ensemble short forecasts
+```{r}
+short.ensemble = ((preds10$fcst$deaths.train[,1] +f1$mean[1:10])/2)
+plot(seq(1,10,1), deaths[684:693], type = 'l', ylim = c(200,3000), ylab = "Deaths", xlab = "Days Ahead", main = "10-Day Forecast")
+points(seq(1,10,1), short.ensemble, type = "l", lty = 2)
+legend(1, 850, legend = c("Actual Deaths", "Forecasted Deaths"), lty = 1:2)
+
+ASE10 = mean((deaths[684:693]-short.ensemble)^2)
+ASE10
+```
+
+##Ensemble long forecasts
+```{r}
+long.ensemble = ((preds90$fcst$deaths.train[,1] +f2$mean)/2)
+plot(seq(1,90,1), deaths[684:773], type = 'l', ylim = c(-500,9000), ylab = "Deaths", xlab = "Days Ahead", main = "90-Day Forecast")
+points(seq(1,90,1), long.ensemble, type = "l", lty = 2)
+legend(1, 8000, legend = c("Actual Deaths", "Forecasted Deaths"), lty = 1:2)
+ASE90 = mean((deaths[684:693]-long.ensemble)^2)
+ASE90
+```
